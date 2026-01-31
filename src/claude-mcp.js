@@ -35,11 +35,16 @@ function mcpToolToClaudeTool(t) {
 
 async function getClaudeTools(swiggyAuthToken) {
   if (cachedTools && cachedToolsToken === swiggyAuthToken) return cachedTools;
-  const raw = await listAllTools(swiggyAuthToken);
-  const tools = raw.map(mcpToolToClaudeTool);
-  cachedTools = tools;
-  cachedToolsToken = swiggyAuthToken;
-  return tools;
+  try {
+    const raw = await listAllTools(swiggyAuthToken);
+    const tools = raw.map(mcpToolToClaudeTool);
+    cachedTools = tools;
+    cachedToolsToken = swiggyAuthToken;
+    return tools;
+  } catch (err) {
+    const msg = err?.message || String(err);
+    throw new Error(`Swiggy tools could not be loaded. ${msg}`);
+  }
 }
 
 /**
@@ -59,10 +64,18 @@ export async function chatWithClaudeMcp({
   previousMessages = [],
 }) {
   const anthropic = new Anthropic();
-  const tools = await getClaudeTools(swiggyAuthToken);
+  let tools;
+  try {
+    tools = await getClaudeTools(swiggyAuthToken);
+  } catch (err) {
+    return {
+      text: err?.message || 'Swiggy tools could not be loaded. Check SWIGGY_AUTH_TOKEN and that MCP servers are reachable.',
+      stopReason: 'end_turn',
+    };
+  }
   if (tools.length === 0) {
     return {
-      text: 'Swiggy tools could not be loaded. Check SWIGGY_AUTH_TOKEN and that MCP servers are reachable.',
+      text: 'Swiggy tools could not be loaded. No tools returned from MCP servers. Check SWIGGY_AUTH_TOKEN.',
       stopReason: 'end_turn',
     };
   }
@@ -82,7 +95,7 @@ export async function chatWithClaudeMcp({
       system: SYSTEM_PROMPT,
       messages: currentMessages,
       tools,
-      tool_choice: 'auto',
+      tool_choice: { type: 'auto' },
     });
 
     const textParts = [];

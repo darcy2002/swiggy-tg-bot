@@ -45,6 +45,18 @@ Place Swiggy orders from natural language in Telegram using **Claude** and the *
 
    Or with auto-restart: `npm run dev`
 
+### If you see "Swiggy tools could not be loaded"
+
+1. **Set the token in `.env`**  
+   Add a single line: `SWIGGY_AUTH_TOKEN=<paste your access_token here>`  
+   Use only the `access_token` value from your OAuth response (no `Bearer `, no quotes). Restart the bot after saving `.env`.
+
+2. **Use the new error message**  
+   The bot now returns the real failure reason (e.g. "SWIGGY_AUTH_TOKEN is missing", "MCP initialize failed: 401", "no session id"). Check that message in Telegram to see whether the token is wrong, expired, or the MCP server is unreachable.
+
+3. **Token expiry**  
+   Swiggy tokens expire. If it used to work and then stops, get a new `access_token` via OAuth (e.g. Guided OAuth in MCP Inspector) and update `SWIGGY_AUTH_TOKEN`.
+
 ## Usage
 
 - **/start** — Intro and tips  

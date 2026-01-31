@@ -16,17 +16,24 @@ const SESSION_PREFIX = {
   swiggy_dineout: 'swiggy_dineout__',
 };
 
-const sessions = new Map();
+const connections = new Map();
 
-async function ensureSession(baseUrl, token) {
+/**
+ * Swiggy MCP returns initialize result in body but no session id in headers (stateless HTTP).
+ * We store { baseUrl, token, sessionId: null } and omit Mcp-Session-Id on tools/list and tools/call.
+ */
+async function ensureConnection(baseUrl, token) {
   const key = baseUrl;
-  if (sessions.get(key)) return sessions.get(key);
+  if (connections.get(key)) return connections.get(key);
+  if (!token) {
+    throw new Error('SWIGGY_AUTH_TOKEN is required. Add your Swiggy OAuth access_token to .env');
+  }
   const res = await fetch(baseUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
-      ...(token && { Authorization: `Bearer ${token}` }),
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -39,22 +46,43 @@ async function ensureSession(baseUrl, token) {
       id: 1,
     }),
   });
-  const sessionId = res.headers.get('mcp-session-id') || res.headers.get('Mcp-Session-Id');
-  if (!sessionId) {
-    const text = await res.text();
-    throw new Error(`MCP initialize failed: no session id. ${res.status} ${text}`);
+  const text = await res.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = null;
   }
-  await fetch(baseUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Mcp-Session-Id': sessionId,
-      ...(token && { Authorization: `Bearer ${token}` }),
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-  });
-  sessions.set(key, { sessionId, baseUrl, token });
-  return sessions.get(key);
+  if (body?.error) {
+    throw new Error(`MCP initialize failed: ${body.error.message || JSON.stringify(body.error)}`);
+  }
+  if (!res.ok) {
+    throw new Error(`MCP initialize HTTP ${res.status}. ${text.slice(0, 200)}`);
+  }
+  const sessionId = res.headers.get('mcp-session-id') || res.headers.get('Mcp-Session-Id');
+  if (sessionId) {
+    await fetch(baseUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Mcp-Session-Id': sessionId,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+  }
+  connections.set(key, { sessionId: sessionId || null, baseUrl, token });
+  return connections.get(key);
+}
+
+function requestHeaders(conn) {
+  const h = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+    Authorization: `Bearer ${conn.token}`,
+  };
+  if (conn.sessionId) h['Mcp-Session-Id'] = conn.sessionId;
+  return h;
 }
 
 function getServerAndName(claudeToolName) {
@@ -73,25 +101,30 @@ function getServerAndName(claudeToolName) {
 export async function listToolsForServer(serverKey, token) {
   const baseUrl = SWIGGY_BASE_URLS[serverKey];
   if (!baseUrl) return [];
-  const { sessionId, baseUrl: url, token: t } = await ensureSession(baseUrl, token);
+  const conn = await ensureConnection(baseUrl, token);
   const prefix = SESSION_PREFIX[serverKey];
-  const res = await fetch(url, {
+  const res = await fetch(conn.baseUrl, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-      'Mcp-Session-Id': sessionId,
-      ...(t && { Authorization: `Bearer ${t}` }),
-    },
+    headers: requestHeaders(conn),
     body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 2 }),
   });
-  const data = await res.json();
-  const tools = data?.result?.tools ?? [];
-  return tools.map((t) => ({
-    ...t,
-    name: prefix + t.name,
+  const rawText = await res.text();
+  let data;
+  try {
+    data = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    throw new Error(`tools/list invalid JSON (${serverKey}): ${rawText.slice(0, 150)}`);
+  }
+  if (data?.error) {
+    throw new Error(`${serverKey} tools/list: ${data.error.message || JSON.stringify(data.error)}`);
+  }
+  const result = data?.result;
+  const tools = Array.isArray(result?.tools) ? result.tools : Array.isArray(result) ? result : [];
+  return tools.map((tool) => ({
+    ...tool,
+    name: prefix + (tool.name || 'unknown'),
     _server: serverKey,
-    _originalName: t.name,
+    _originalName: tool.name,
   }));
 }
 
@@ -99,12 +132,29 @@ export async function listToolsForServer(serverKey, token) {
  * List all tools from Food, Instamart, and Dineout (with prefixed names).
  */
 export async function listAllTools(token) {
-  const all = await Promise.all([
-    listToolsForServer('swiggy_food', token).catch(() => []),
-    listToolsForServer('swiggy_im', token).catch(() => []),
-    listToolsForServer('swiggy_dineout', token).catch(() => []),
+  if (!token || typeof token !== 'string' || !token.trim()) {
+    throw new Error('SWIGGY_AUTH_TOKEN is missing or empty. Set it in .env with your Swiggy OAuth access_token.');
+  }
+  const errors = [];
+  const results = await Promise.allSettled([
+    listToolsForServer('swiggy_food', token),
+    listToolsForServer('swiggy_im', token),
+    listToolsForServer('swiggy_dineout', token),
   ]);
-  return all.flat();
+  const all = [];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const name = ['swiggy_food', 'swiggy_im', 'swiggy_dineout'][i];
+    if (r.status === 'fulfilled') {
+      all.push(...r.value);
+    } else {
+      errors.push(`${name}: ${r.reason?.message || String(r.reason)}`);
+    }
+  }
+  if (all.length === 0 && errors.length > 0) {
+    throw new Error(`Could not load any Swiggy tools. ${errors.join('; ')}`);
+  }
+  return all;
 }
 
 /**
@@ -115,15 +165,10 @@ export async function callTool(claudeToolName, arguments_, token) {
   if (!parsed) throw new Error(`Unknown tool server for: ${claudeToolName}`);
   const { server, name } = parsed;
   const baseUrl = SWIGGY_BASE_URLS[server];
-  const { sessionId, token: t } = await ensureSession(baseUrl, token);
-  const res = await fetch(baseUrl, {
+  const conn = await ensureConnection(baseUrl, token);
+  const res = await fetch(conn.baseUrl, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-      'Mcp-Session-Id': sessionId,
-      ...(t && { Authorization: `Bearer ${t}` }),
-    },
+    headers: requestHeaders(conn),
     body: JSON.stringify({
       jsonrpc: '2.0',
       method: 'tools/call',
@@ -131,8 +176,14 @@ export async function callTool(claudeToolName, arguments_, token) {
       id: 3,
     }),
   });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  const rawText = await res.text();
+  let data;
+  try {
+    data = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    throw new Error(`tools/call invalid JSON: ${rawText.slice(0, 150)}`);
+  }
+  if (data?.error) throw new Error(data.error.message || JSON.stringify(data.error));
   const content = data?.result?.content ?? [];
   const textParts = content.filter((c) => c.type === 'text').map((c) => c.text);
   return textParts.length ? textParts.join('\n') : JSON.stringify(data.result);
