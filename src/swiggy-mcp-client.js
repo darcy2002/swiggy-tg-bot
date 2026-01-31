@@ -16,6 +16,11 @@ const SESSION_PREFIX = {
   swiggy_dineout: 'swiggy_dineout__',
 };
 
+const log = {
+  mcp: (msg, ...args) => console.log(`[MCP] ${msg}`, ...args),
+  mcpErr: (msg, ...args) => console.error(`[MCP] ${msg}`, ...args),
+};
+
 const connections = new Map();
 
 /**
@@ -54,9 +59,11 @@ async function ensureConnection(baseUrl, token) {
     body = null;
   }
   if (body?.error) {
+    log.mcpErr('initialize failed', baseUrl, body.error.message || JSON.stringify(body.error));
     throw new Error(`MCP initialize failed: ${body.error.message || JSON.stringify(body.error)}`);
   }
   if (!res.ok) {
+    log.mcpErr('initialize HTTP', res.status, baseUrl, text.slice(0, 150));
     throw new Error(`MCP initialize HTTP ${res.status}. ${text.slice(0, 200)}`);
   }
   const sessionId = res.headers.get('mcp-session-id') || res.headers.get('Mcp-Session-Id');
@@ -72,6 +79,7 @@ async function ensureConnection(baseUrl, token) {
     });
   }
   connections.set(key, { sessionId: sessionId || null, baseUrl, token });
+  log.mcp('connected', baseUrl, sessionId ? 'with session' : 'stateless');
   return connections.get(key);
 }
 
@@ -120,6 +128,7 @@ export async function listToolsForServer(serverKey, token) {
   }
   const result = data?.result;
   const tools = Array.isArray(result?.tools) ? result.tools : Array.isArray(result) ? result : [];
+  log.mcp('listTools', serverKey, 'count=', tools.length);
   return tools.map((tool) => ({
     ...tool,
     name: prefix + (tool.name || 'unknown'),
@@ -152,8 +161,10 @@ export async function listAllTools(token) {
     }
   }
   if (all.length === 0 && errors.length > 0) {
+    log.mcpErr('listAllTools: no tools loaded', errors.join('; '));
     throw new Error(`Could not load any Swiggy tools. ${errors.join('; ')}`);
   }
+  log.mcp('listAllTools total', all.length);
   return all;
 }
 
@@ -183,8 +194,13 @@ export async function callTool(claudeToolName, arguments_, token) {
   } catch {
     throw new Error(`tools/call invalid JSON: ${rawText.slice(0, 150)}`);
   }
-  if (data?.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  if (data?.error) {
+    log.mcpErr('callTool', name, 'error=', data.error.message);
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
   const content = data?.result?.content ?? [];
   const textParts = content.filter((c) => c.type === 'text').map((c) => c.text);
-  return textParts.length ? textParts.join('\n') : JSON.stringify(data.result);
+  const out = textParts.length ? textParts.join('\n') : JSON.stringify(data.result);
+  log.mcp('callTool', name, 'server=', server, 'resultLength=', out.length);
+  return out;
 }

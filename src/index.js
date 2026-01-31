@@ -23,21 +23,28 @@ if (!TELEGRAM_TOKEN || !ANTHROPIC_KEY) {
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-// Optional: keep last N messages per chat for context (set to 0 to disable)
-const MAX_HISTORY = 10;
+const log = {
+  tg: (msg, ...args) => console.log(`[TG] ${msg}`, ...args),
+  tgErr: (msg, ...args) => console.error(`[TG] ${msg}`, ...args),
+};
+
+// Keep last N turns (user + assistant pairs) for context
+// Lower = less tokens, but less context for follow-up questions
+const MAX_TURNS = 5;
 const chatHistory = new Map();
 
 function getHistory(chatId) {
   const history = chatHistory.get(chatId) || [];
-  if (MAX_HISTORY <= 0) return [];
-  return history.slice(-MAX_HISTORY * 2);
+  if (MAX_TURNS <= 0) return [];
+  // Each turn = 2 messages (user + assistant)
+  return history.slice(-MAX_TURNS * 2);
 }
 
 function pushHistory(chatId, role, content) {
-  if (MAX_HISTORY <= 0) return;
+  if (MAX_TURNS <= 0) return;
   let history = chatHistory.get(chatId) || [];
   history.push({ role, content });
-  const maxLen = MAX_HISTORY * 2;
+  const maxLen = MAX_TURNS * 2;
   if (history.length > maxLen) history = history.slice(-maxLen);
   chatHistory.set(chatId, history);
 }
@@ -73,6 +80,8 @@ bot.on('message', async (msg) => {
     return;
   }
 
+  log.tg('message received', { chatId, textPreview: text.slice(0, 80) + (text.length > 80 ? '...' : '') });
+
   const loadingMsg = await bot.sendMessage(chatId, 'Checking Swiggy…');
 
   try {
@@ -81,29 +90,37 @@ bot.on('message', async (msg) => {
       content: m.content,
     }));
 
-    const { text: reply } = await chatWithClaudeMcp({
+    log.tg('calling Claude...');
+    const { text: reply, usage } = await chatWithClaudeMcp({
       userMessage: text,
       swiggyAuthToken: SWIGGY_AUTH,
       previousMessages,
     });
 
+    if (usage) {
+      log.tg('tokens used:', { input: usage.input_tokens, output: usage.output_tokens, total: (usage.input_tokens || 0) + (usage.output_tokens || 0) });
+    }
+
     await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
-    const sent = await bot.sendMessage(chatId, reply || 'Done.', {
+    await bot.sendMessage(chatId, reply || 'Done.', {
       parse_mode: undefined,
       disable_web_page_preview: true,
     });
 
+    log.tg('response sent', { chatId, replyLength: (reply || '').length });
+    // Store only plain text in history (user message + assistant reply)
     pushHistory(chatId, 'user', text);
     pushHistory(chatId, 'assistant', reply || 'Done.');
   } catch (err) {
     await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
     const message =
       err?.message || err?.toString?.() || 'Something went wrong.';
+    log.tgErr('request failed', { chatId, error: message });
+    console.error('[TG] Claude/MCP error:', err);
     await bot.sendMessage(
       chatId,
       `Error: ${message}. Check ANTHROPIC_API_KEY and that Swiggy MCP is reachable.`
     );
-    console.error('Claude/MCP error:', err);
   }
 });
 
