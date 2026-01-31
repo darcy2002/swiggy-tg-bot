@@ -58,9 +58,11 @@ Place Swiggy orders from natural language in Telegram using **Claude** and the *
 
 ## How it works
 
-1. Telegram messages are sent to **Claude** via the Anthropic Messages API.
-2. Claude has access to **Swiggy MCP** tools (Food, Instamart, Dineout) via the [MCP connector](https://platform.claude.com/docs/en/agents-and-tools/mcp-connector) beta (`mcp-client-2025-11-20`).
+1. You send a message in **Telegram**.
+2. The message goes to **Claude** (Anthropic Messages API) with Swiggy MCP tool definitions (Food, Instamart, Dineout).
 3. Claude interprets the user’s intent, calls the right MCP tools (search, cart, order, etc.), and replies in Telegram.
+
+So: **Telegram → Claude (chooses tools) → we call Swiggy MCP → results → Claude (formats reply) → Telegram.** Your **Swiggy OAuth token** is used only when calling the MCP server (step 4).
 
 ## Troubleshooting: OAuth token ("Failed to discover OAuth metadata")
 
