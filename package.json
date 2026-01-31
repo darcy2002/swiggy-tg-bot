@@ -1,0 +1,18 @@
+{
+  "name": "swiggy-tg-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot to place Swiggy orders via natural language using Claude + Swiggy MCP",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["telegram", "swiggy", "mcp", "claude", "bot"],
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
