@@ -17,18 +17,27 @@ const SESSION_PREFIX = {
 };
 
 const log = {
-  mcp: (msg, ...args) => console.log(`[MCP] ${msg}`, ...args),
-  mcpErr: (msg, ...args) => console.error(`[MCP] ${msg}`, ...args),
+  mcp: (msg, ...args) => console.log(`  \x1b[90m[MCP]\x1b[0m ${msg}`, ...args),
+  mcpErr: (msg, ...args) => console.error(`  \x1b[31m[MCP]\x1b[0m ${msg}`, ...args),
 };
 
 const connections = new Map();
 
 /**
+ * Clear cached connections (call when token changes).
+ */
+export function clearConnectionCache() {
+  connections.clear();
+  log.mcp('connection cache cleared');
+}
+
+/**
  * Swiggy MCP returns initialize result in body but no session id in headers (stateless HTTP).
  * We store { baseUrl, token, sessionId: null } and omit Mcp-Session-Id on tools/list and tools/call.
+ * Cache key includes token so new token = fresh connections.
  */
 async function ensureConnection(baseUrl, token) {
-  const key = baseUrl;
+  const key = `${baseUrl}::${token ?? ''}`;
   if (connections.get(key)) return connections.get(key);
   if (!token) {
     throw new Error('SWIGGY_AUTH_TOKEN is required. Add your Swiggy OAuth access_token to .env');
@@ -79,7 +88,6 @@ async function ensureConnection(baseUrl, token) {
     });
   }
   connections.set(key, { sessionId: sessionId || null, baseUrl, token });
-  log.mcp('connected', baseUrl, sessionId ? 'with session' : 'stateless');
   return connections.get(key);
 }
 
@@ -128,7 +136,6 @@ export async function listToolsForServer(serverKey, token) {
   }
   const result = data?.result;
   const tools = Array.isArray(result?.tools) ? result.tools : Array.isArray(result) ? result : [];
-  log.mcp('listTools', serverKey, 'count=', tools.length);
   return tools.map((tool) => ({
     ...tool,
     name: prefix + (tool.name || 'unknown'),
@@ -161,10 +168,9 @@ export async function listAllTools(token) {
     }
   }
   if (all.length === 0 && errors.length > 0) {
-    log.mcpErr('listAllTools: no tools loaded', errors.join('; '));
+    log.mcpErr('No tools loaded:', errors.join('; '));
     throw new Error(`Could not load any Swiggy tools. ${errors.join('; ')}`);
   }
-  log.mcp('listAllTools total', all.length);
   return all;
 }
 
@@ -195,12 +201,11 @@ export async function callTool(claudeToolName, arguments_, token) {
     throw new Error(`tools/call invalid JSON: ${rawText.slice(0, 150)}`);
   }
   if (data?.error) {
-    log.mcpErr('callTool', name, 'error=', data.error.message);
+    log.mcpErr(name, '—', data.error.message);
     throw new Error(data.error.message || JSON.stringify(data.error));
   }
   const content = data?.result?.content ?? [];
   const textParts = content.filter((c) => c.type === 'text').map((c) => c.text);
   const out = textParts.length ? textParts.join('\n') : JSON.stringify(data.result);
-  log.mcp('callTool', name, 'server=', server, 'resultLength=', out.length);
   return out;
 }
